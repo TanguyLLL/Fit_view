@@ -11,8 +11,7 @@ from functools import reduce
 
 # Usefull paths : to adapt with local path where the data is stored
 # This is the only data that has to be changed by the user
-fitbit_path = '/Users/tanguylienart/Documents/raspberry_projects/data/Tanguy/user-site-export/'  # path to the user-site-export folder
-data_path= '/Users/tanguylienart/Documents/raspberry_projects/data/'  # Path to the folder used to save the produced the data
+
 
 pd.options.display.max_rows = 999
 pd.options.display.max_columns=200
@@ -22,7 +21,7 @@ pd.set_option('max_colwidth', 5000)
 
 
 # Return a tables based on a query
-def run_query(q):
+def run_query(data_path, q):
     with sqlite3.connect(data_path+'fitbit.db') as conn:
         return pd.read_sql(q, conn)
 
@@ -32,12 +31,12 @@ def run_command(c):
         conn.isolation_level = None
         conn.execute(c)
 
-def show_tables():
+def show_tables(data_path):
     q = '''SELECT
         name
     FROM sqlite_master
     WHERE type IN ("table");'''
-    df =run_query(q)
+    df =run_query(data_path, q)
     tb_list = list(df['name'])
     return tb_list
 
@@ -160,18 +159,70 @@ def list_tables(fitbit_path):
 # -----------------------------------------------------------------------------------------------
 
 
+
+
+
 def to_sql(data_path, fitbit_path):
+
+
     list_dico = list_tables(fitbit_path)
     conn= sqlite3.connect(data_path+ 'fitbit.db')
+
+
+
+
+    ##### CODE USED TO BUILD resting heart rate TABLE #####
+
+    active_minutes_list=['sedentary_minutes','lightly_active_minutes', 'moderately_active_minutes',
+                         'very_active_minutes']
+
+    t_list = show_tables(data_path)
+    df_dico={}
+    temp_list= []
+    if 'minutes_in_zones' not in t_list:
+
+        conn.execute('''
+        CREATE TABLE IF NOT EXISTS "minutes_in_zones" (
+        "dateTime" TIMESTAMP NOT NULL ,
+        "value_sedentary_minutes" INTEGER,
+        "value_lightly_active_minutes" INTEGER,
+        "value_moderately_active_minutes" INTEGER,
+        "value_very_active_minutes" INTEGER,
+        PRIMARY KEY (dateTime));
+        ''').fetchall()
+
+        for name in active_minutes_list:
+            df_dico[name]= pd.DataFrame()
+            for file in list_dico[name]:
+                df= pd.read_json(fitbit_path+file)
+                df_dico[name] = pd.concat([df, df_dico[name]])
+            df_dico[name]= df_dico[name].rename(columns= {'value':'value'+'_'+name})
+            temp_list.append(df_dico[name])
+        df_final= reduce(lambda left,right: pd.merge(left,right, on='dateTime'), temp_list)
+        df_final.to_sql('minutes_in_zones',conn, index=False, if_exists='append')
+    else:
+        print('Table minutes_in_zones already exists')
 
 
     #----------------------------------------------------------------------------
 
     ##### CODE USED TO BUILD time_in_heart_rate_zones TABLE #####
 
-    t_list = show_tables()
+    t_list = show_tables(data_path)
 
     if 'time_in_heart_rate_zones' not in t_list:
+
+        conn.execute('''
+        CREATE TABLE IF NOT EXISTS "time_in_heart_rate_zones" (
+        "dateTime" TIMESTAMP NOT NULL ,
+        "valuesInZones.BELOW_DEFAULT_ZONE_1" REAL,
+        "valuesInZones.IN_DEFAULT_ZONE_1" REAL,
+        "valuesInZones.IN_DEFAULT_ZONE_2" REAL,
+        "valuesInZones.IN_DEFAULT_ZONE_3" REAL,
+        PRIMARY KEY (dateTime));
+        ''').fetchall()
+
+
         for file in list_dico['time_in_heart_rate_zones']:
             phase_1 = pd.read_json(fitbit_path + file)
             phase_2 = phase_1['value']
@@ -188,11 +239,20 @@ def to_sql(data_path, fitbit_path):
     ##### CODE USED TO BUILD heart_rate TABLE #####
     # - !!!! THIS TABLE CAN TAKE TIME TO BE BUILD and reach a size of several million rows
 
-    t_list = show_tables()
+    t_list = show_tables(data_path)
     counter = 0
 
 
     if 'heart_rate' not in t_list:
+
+        conn.execute('''
+        CREATE TABLE IF NOT EXISTS "heart_rate" (
+        "bpm" REAL ,
+        "confidence" REAL,
+        "dateTime" TIMESTAMP NOT NULL,
+        PRIMARY KEY (dateTime));
+        ''').fetchall()
+
         for file in list_dico['heart_rate']:
             data = pd.read_json(fitbit_path + file)
             value = pd.io.json.json_normalize(data['value'])
@@ -201,8 +261,8 @@ def to_sql(data_path, fitbit_path):
             final.to_sql('heart_rate',conn, if_exists='append', index=False)
             counter += 1
             if counter % 40 == 0:
-                print('File transformed = {0} - {1} % done!  '.format(counter,
-                                                                      round(counter / len(list_dico['heart_rate']), 3) * 100))
+                print('File transformed = {0} - {1} % done!  '.format(counter,np.around(
+                                                                      counter / len(list_dico['heart_rate']) * 100,decimals= 3)))
     else:
         print('Table "heart_rate" already exists')
 
@@ -210,9 +270,20 @@ def to_sql(data_path, fitbit_path):
     #----------------------------------------------------------------------------
     ##### CODE USED TO BUILD resting heart rate TABLE #####
 
-    t_list = show_tables()
+    t_list = show_tables(data_path)
 
     if 'resting_heart_rate' not in t_list:
+
+        conn.execute('''
+        CREATE TABLE IF NOT EXISTS "resting_heart_rate" (
+        "date" TIMESTAMP NOT NULL ,
+        "error" FLOAT,
+        "value" FLOAT,
+        PRIMARY KEY (date));
+        ''').fetchall()
+
+
+
         for file in list_dico['resting_heart_rate']:
             data = pd.read_json(fitbit_path + file)
             value = pd.io.json.json_normalize(data['value'])
@@ -227,26 +298,7 @@ def to_sql(data_path, fitbit_path):
 
 
     #----------------------------------------------------------------------------
-    ##### CODE USED TO BUILD resting heart rate TABLE #####
 
-    active_minutes_list=['sedentary_minutes','lightly_active_minutes', 'moderately_active_minutes',
-                         'very_active_minutes']
-
-    t_list = show_tables()
-    df_dico={}
-    temp_list= []
-    if 'minutes_in_zones' not in t_list:
-        for name in active_minutes_list:
-            df_dico[name]= pd.DataFrame()
-            for file in list_dico[name]:
-                df= pd.read_json(fitbit_path+file)
-                df_dico[name] = pd.concat([df, df_dico[name]])
-            df_dico[name]= df_dico[name].rename(columns= {'value':'value'+'_'+name})
-            temp_list.append(df_dico[name])
-        df_final= reduce(lambda left,right: pd.merge(left,right, on='dateTime'), temp_list)
-        df_final.to_sql('minutes_in_zones',conn, index=False)
-    else:
-        (print('Table minutes_in_zones already exists'))
 
 
 
@@ -263,7 +315,7 @@ def to_sql(data_path, fitbit_path):
 
 
 
-    conn.close()
-    conn= sqlite3.connect(data_path+ 'fitbit.db')
+#conn.close()
+#conn= sqlite3.connect(data_path+ 'fitbit.db')
 
 
